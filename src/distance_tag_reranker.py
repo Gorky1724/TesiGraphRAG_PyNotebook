@@ -16,7 +16,6 @@ from src.predetermined_query_handling_methods import verify_if_pred_query
 from src.config import (
     COLLECTION_NAME,
     TAG_BOOST_ASSIGNED_CONV, TAG_BOOST_AUTO, TAG_MAX_BOOST,
-    DISTANCE_CLASS_FACTORS,
     RETRIEVAL_TOP_K, RERANKING_TOP_N,
 )
 
@@ -198,6 +197,8 @@ class DistanceTagReranker:
         auto_set = set(auto_tags)
         all_query_set = set(all_query_tags)
 
+        class_factors = self.sidecar_manager.get_class_factors(sidecar_data)
+
         ### Partizionamento in categorie 1 e 4 dei retrieved_points
         category1_candidates = []
         category4_candidates = []
@@ -257,7 +258,7 @@ class DistanceTagReranker:
                 predq_adj = predq_data.get("adjacencies") or {}
                 if chunk_id in predq_adj:
                     d_class = predq_adj[chunk_id].get("distance_class", "INVARIATI")
-                    predq_alteration = DISTANCE_CLASS_FACTORS.get(d_class, 1.0)
+                    predq_alteration = class_factors.get(d_class, 1.0)
 
             # Punteggio finale
             raw_final_score = initial_score * dist_factor * tag_alteration * predq_alteration

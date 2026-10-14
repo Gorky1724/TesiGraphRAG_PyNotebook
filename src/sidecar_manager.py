@@ -2,6 +2,8 @@ import sys
 import json
 import copy
 import time
+import re
+import math
 from pathlib import Path
 from typing import Any, Dict, Optional, List
 
@@ -56,7 +58,6 @@ class SidecarManager:
         self._ensure_file_exists()
 
     ### Accesso e gestione dati e cache
-
     def _ensure_file_exists(self):
         self.filepath.parent.mkdir(parents=True, exist_ok=True)
         if not self.filepath.exists():
@@ -143,12 +144,108 @@ class SidecarManager:
         data = self.load_data()
         return data.get("global_tags", {})
 
+    ### Registro delle Classi di Distanza (scala dei fattori)
+    def get_class_factors(self, data: Optional[dict] = None) -> Dict[str, float]:
+        """
+        Restituisce la scala attiva {nome_classe: fattore moltiplicativo}.
+        Finche' nel sidecar non e' mai stata modificata la scala (chiave "distance_classes" assente)
+        si usano i default di config.DISTANCE_CLASS_FACTORS, quindi un sidecar esistente continua a funzionare identico.
+        "INVARIATI" (1.0) e' la classe neutra: e' sempre presente e non e' rimovibile.
+        Se si ha gia' in mano il dizionario `data` (load_data) lo si puo' passare per evitare un'ulteriore copia.
+        """
+        if data is None:
+            data = self.load_data()
+        registry = data.get("distance_classes")
+        factors = dict(registry) if registry else dict(DISTANCE_CLASS_FACTORS)
+        factors["INVARIATI"] = 1.0
+        return factors
+
+    def add_distance_class(self, name: str, factor: float) -> str:
+        """
+        Aggiunge una classe di distanza alla scala. Restituisce il nome normalizzato (MAIUSCOLO_CON_UNDERSCORE).
+        Solleva ValueError se nome o fattore non sono validi.
+        Il fattore deve essere > 0 e diverso da quello delle classi esistenti (1.0 e' riservato a INVARIATI):
+        due classi con lo stesso fattore sarebbero indistinguibili sulla scala colori e nel reranking.
+        """
+        norm_name = re.sub(r"[^A-Z0-9_]", "", str(name or "").upper().strip().replace(" ", "_"))
+        if not norm_name:
+            raise ValueError("Nome della classe non valido.")
+
+        try:
+            factor = float(factor)
+        except (TypeError, ValueError):
+            raise ValueError("Il fattore deve essere un numero.")
+        if not math.isfinite(factor) or factor <= 0:
+            raise ValueError("Il fattore deve essere un numero maggiore di 0.")
+        factor = round(factor, 4)
+
+        data = self.load_data()
+        factors = self.get_class_factors(data)
+        if norm_name in factors:
+            raise ValueError(f"La classe {norm_name} esiste gia'.")
+        if any(math.isclose(factor, f) for f in factors.values()):
+            raise ValueError(f"Esiste gia' una classe con fattore {factor} (1.0 e' riservato a INVARIATI).")
+
+        factors[norm_name] = factor
+        data["distance_classes"] = factors
+        self.save_data(data)
+        print(f"<<| Classe di distanza aggiunta: {norm_name} (x{factor}) |>>")
+        return norm_name
+
+    def remove_distance_class(self, name: str, fallback: Optional[str] = None) -> str:
+        """
+        Rimuove una classe dalla scala e riassegna gli archi che la usavano (sia le adiacenze tra chunk
+        sia quelle delle query pre-determinate), cosi' nel sidecar non restano classi orfane.
+        - fallback=None: gli archi passano alla classe rimasta con fattore piu' vicino.
+        - fallback="INVARIATI": gli archi vengono ripristinati (la voce viene eliminata dal JSON).
+        INVARIATI non e' rimovibile. Restituisce la classe di fallback usata.
+        """
+        norm_name = str(name or "").upper().strip()
+        if norm_name == "INVARIATI":
+            raise ValueError("INVARIATI e' la classe neutra e non puo' essere rimossa.")
+
+        data = self.load_data()
+        factors = self.get_class_factors(data)
+        if norm_name not in factors:
+            raise ValueError(f"La classe {norm_name} non esiste.")
+
+        removed_factor = factors.pop(norm_name)
+        if fallback is None:
+            # A parita' di distanza vince la classe meno estrema (piu' vicina a 1.0)
+            fallback = min(factors, key=lambda c: (abs(factors[c] - removed_factor), abs(factors[c] - 1.0)))
+        else:
+            fallback = str(fallback).upper().strip()
+            if fallback not in factors:
+                raise ValueError(f"Classe di fallback {fallback} non valida.")
+
+        def _remap(info_map: Dict[str, Dict[str, str]]):
+            # info_map: {altro_nodo: {"distance_class": ...}}
+            for other in list(info_map):
+                if info_map[other].get("distance_class") == norm_name:
+                    if fallback == "INVARIATI":
+                        del info_map[other]
+                    else:
+                        info_map[other]["distance_class"] = fallback
+
+        adj = data.get("modified_adjacencies", {})
+        for cid in list(adj):
+            _remap(adj[cid])
+            if not adj[cid]:
+                del adj[cid]
+        for q_info in data.get("predetermined_queries", {}).values():
+            _remap(q_info.get("adjacencies", {}))
+
+        data["distance_classes"] = factors
+        self.save_data(data)
+        print(f"<<| Classe di distanza rimossa: {norm_name}; archi riassegnati a {fallback} |>>")
+        return fallback
+
     ### Manipolazione Classi di Distanza
     def save_pairwise_class_edits(self, chunk_id_1: str, chunk_id_2: str, distance_class: Optional[str]):
         """
         Salva o aggiorna la classe di distanza tra una coppia di chunk.
         Garantisce simmetria (chunk_1 <-> chunk_2) e pulizia automatica se la classe
-        dovesse essere "INVARIATI" o non presente in DISTANCE_CLASS_FACTORS.
+        dovesse essere "INVARIATI" o non presente tra le classi di distanza attive.
         Reindirizza automaticamente a save_predetermined_query_adjacency se uno degli ID riguarda una query pre-determinata
         """
         c1, c2 = str(chunk_id_1), str(chunk_id_2)
@@ -164,7 +261,7 @@ class SidecarManager:
         adj = data.setdefault("modified_adjacencies", {})
 
         norm_class = str(distance_class).upper().strip() if distance_class is not None else "INVARIATI"
-        if norm_class not in DISTANCE_CLASS_FACTORS:
+        if norm_class not in self.get_class_factors(data):
             norm_class = "INVARIATI"
 
         if norm_class == "INVARIATI":
@@ -224,7 +321,7 @@ class SidecarManager:
             d_cls = edit.get("distance_class")
             norm_class = str(d_cls).upper().strip() if d_cls is not None else "INVARIATI"
 
-            if norm_class not in DISTANCE_CLASS_FACTORS:
+            if norm_class not in self.get_class_factors(data):
                 norm_class = "INVARIATI"
 
             if norm_class == "INVARIATI":
@@ -487,7 +584,7 @@ class SidecarManager:
         adj = query_entry.setdefault("adjacencies", {})
 
         norm_class = str(distance_class).upper().strip() if distance_class is not None else "INVARIATI"
-        if norm_class not in DISTANCE_CLASS_FACTORS:
+        if norm_class not in self.get_class_factors(data):
             norm_class = "INVARIATI"
 
         if norm_class == "INVARIATI":
@@ -528,7 +625,7 @@ class SidecarManager:
 
             d_cls = edit.get("distance_class")
             norm_class = str(d_cls).upper().strip() if d_cls is not None else "INVARIATI"
-            if norm_class not in DISTANCE_CLASS_FACTORS:
+            if norm_class not in self.get_class_factors(data):
                 norm_class = "INVARIATI"
 
             if norm_class == "INVARIATI":
@@ -552,4 +649,3 @@ class SidecarManager:
             return q_info.get("graphically_assigned_tags", [])
         else:
             return data.get("tag_overrides", {}).get(node_id, {}).get("user_tags", [])
-

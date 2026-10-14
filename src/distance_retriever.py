@@ -13,7 +13,6 @@ if str(project_root) not in sys.path:
 from src.sidecar_manager import SidecarManager
 from src.config import (
     COLLECTION_NAME,
-    DISTANCE_CLASS_FACTORS,
     TAG_BOOST_ASSIGNED_CONV, TAG_BOOST_AUTO, TAG_MAX_BOOST,
     MIN_COSINE_THRESHOLD
 )
@@ -146,6 +145,8 @@ class DistanceRetriever:
         tag_overrides = sidecar_data.get("tag_overrides", {})
         pred_queries = sidecar_data.get("predetermined_queries", {})
 
+        class_factors = self.sidecar_manager.get_class_factors(sidecar_data)
+
         # ID dei chunk da analizzare per evitare duplicazioni
         seen_ids = set()
         for idx, hit in enumerate(to_analyze):
@@ -190,8 +191,8 @@ class DistanceRetriever:
                 for neighbor_id, info in neighbors.items():
                     if neighbor_id not in seen_ids:
                         d_class = info.get("distance_class", "INVARIATI")
-                        if d_class in ["AVVICINATI", "MOLTO_AVVICINATI"]:
-                            factor = DISTANCE_CLASS_FACTORS.get(d_class, 1.0)
+                        factor = class_factors.get(d_class, 1.0)
+                        if factor > 1.0:  # classi "di avvicinamento": qualunque classe con fattore > 1
                             # Prendiamo dist_factor massimo trai possibili
                             if neighbor_id not in candidate_neighbors or factor > candidate_neighbors[neighbor_id]["distance_factor"]:
                                 candidate_neighbors[neighbor_id] = {
@@ -207,8 +208,8 @@ class DistanceRetriever:
             for neighbor_id, info in predq_adj.items():
                 if neighbor_id not in seen_ids:
                     d_class = info.get("distance_class", "INVARIATI")
-                    if d_class in ["AVVICINATI", "MOLTO_AVVICINATI"]:
-                        factor = DISTANCE_CLASS_FACTORS.get(d_class, 1.0)
+                    factor = class_factors.get(d_class, 1.0)
+                    if factor > 1.0:  # classi "di avvicinamento": qualunque classe con fattore > 1
                         if neighbor_id not in candidate_neighbors:
                             candidate_neighbors[neighbor_id] = {
                                 "distance_class": d_class,
@@ -364,4 +365,3 @@ class DistanceRetriever:
             del item["_raw_final_score"]
 
         return prioritized_candidates[:top_m]
-

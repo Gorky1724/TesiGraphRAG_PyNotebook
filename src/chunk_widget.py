@@ -7,7 +7,7 @@ project_root = Path("~/tesi_graphrag").expanduser().resolve()
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from src.config import BASE_GRAPH_DISTANCE, DISTANCE_CLASS_FACTORS
+from src.config import BASE_GRAPH_DISTANCE
 from src.sidecar_manager import SidecarManager
 
 class ChunkGraphWidget(anywidget.AnyWidget):
@@ -22,6 +22,11 @@ class ChunkGraphWidget(anywidget.AnyWidget):
     #Traitlets per modifiche sulle classi di distanza in batch -- assicura di non perdere edit
     pairwise_class_edit = traitlets.Dict({}).tag(sync=True)
     pairwise_edits_batch = traitlets.List([]).tag(sync=True)
+
+    # Scala delle classi di distanza {nome: fattore}, e azioni di aggiunta/rimozione inviate da JS
+    distance_classes = traitlets.Dict({}).tag(sync=True)
+    class_registry_action = traitlets.Dict({}).tag(sync=True)
+    class_registry_status = traitlets.Unicode("").tag(sync=True)
 
     def __init__(self, sidecar=None, sidecar_path=None, **kwargs):
         """
@@ -42,8 +47,12 @@ class ChunkGraphWidget(anywidget.AnyWidget):
 
         self.observe(self._on_pairwise_edit, names=["pairwise_class_edit"])
         self.observe(self._on_pairwise_edits_batch, names=["pairwise_edits_batch"])
+
         self.observe(self._on_tag_action, names=["tag_action"])
         self.refresh_global_tags()
+
+        self.observe(self._on_class_registry_action, names=["class_registry_action"])
+        self.refresh_distance_classes()
 
     ### Caricamento grafo
     def load_graph(self, raw_graph_data):
@@ -51,6 +60,7 @@ class ChunkGraphWidget(anywidget.AnyWidget):
         self._raw_graph_data = raw_graph_data
         data = self.sidecar.load_data()
         overrides = data.get("tag_overrides", {})
+        class_factors = self.sidecar.get_class_factors(data)
 
         # Unificazione delle adiacenze (modified_adjacencies + predetermined_queries)
         adj = {}
@@ -102,7 +112,7 @@ class ChunkGraphWidget(anywidget.AnyWidget):
             elif tgt in adj and src in adj[tgt]:
                 distance_class = adj[tgt][src].get("distance_class", "INVARIATI")
 
-            factor = DISTANCE_CLASS_FACTORS.get(distance_class, 1.0)
+            factor = class_factors.get(distance_class, 1.0)
 
             l_copy["source"] = src
             l_copy["target"] = tgt
@@ -119,7 +129,7 @@ class ChunkGraphWidget(anywidget.AnyWidget):
                     d_cls = info.get("distance_class", "INVARIATI")
                     if d_cls != "INVARIATI":
                         existing_pairs.add(pair_key)
-                        factor = DISTANCE_CLASS_FACTORS.get(d_cls, 1.0)
+                        factor = class_factors.get(d_cls, 1.0) 
                         enriched_links.append({
                             "source": str(src),
                             "target": str(tgt),
@@ -139,12 +149,50 @@ class ChunkGraphWidget(anywidget.AnyWidget):
             "base_distance": BASE_GRAPH_DISTANCE
         }
         self.refresh_global_tags()
+        self.refresh_distance_classes()
 
-    ### Gestione TAG
+    ### Refresh TAG e Distance Classes
     def refresh_global_tags(self):
         """Sincronizza il dizionatio dei tag globali con il frontend"""
         self.global_tags = self.sidecar.get_global_tags()
 
+    def refresh_distance_classes(self):
+        """Sincronizza la scala {classe: fattore} attiva con il frontend"""
+        self.distance_classes = self.sidecar.get_class_factors()
+
+    ### Gestione Classi di Distanza
+    def _set_class_status(self, message):
+        # Si passa da "" per far scattare il change anche se il messaggio e' identico al precedente
+        self.class_registry_status = ""
+        self.class_registry_status = message
+
+    def _on_class_registry_action(self, change):
+        """Gestisce l'aggiunta/rimozione di una classe di distanza inviata da JavaScript"""
+        action_data = change["new"]
+        if not action_data:
+            return
+
+        action = action_data.get("action")
+        try:
+            if action == "add":
+                name = self.sidecar.add_distance_class(action_data.get("name"), action_data.get("factor"))
+                message = f"Classe {name} aggiunta."
+            elif action == "remove":
+                name = str(action_data.get("name") or "").upper().strip()
+                fallback = self.sidecar.remove_distance_class(name)
+                message = f"Classe {name} rimossa: archi riassegnati a {fallback}."
+            else:
+                return
+        except ValueError as e:
+            self._set_class_status(f"Errore: {e}")
+            return
+
+        self.refresh_distance_classes()
+        if self._raw_graph_data.get("nodes"):
+            self.load_graph(self._raw_graph_data)
+        self._set_class_status(message)
+
+    ### Azioni TAG
     def _on_tag_action(self, change):
         """Gestisce le azioni di aggiunta e rimozione dei TAG inviate da JavaScript"""
         action_data = change["new"]

@@ -19,40 +19,38 @@ export function render({ model, el }) {
   let selectedEdgeKey = null; // Memorizza la chiave dell'arco selezionato
   let currentNodes = [];
 
-  /*
-  //palette blu-azzurro-grigi-arancione-rosso
-  const EDGE_CLASSES = [
-    { name: "MOLTO_AVVICINATI", label: "  Molto Avvicinati", color: "#1d4ed8" },
-    { name: "AVVICINATI", label: "  Avvicinati", color: "#06b6d4" },
-    { name: "INVARIATI", label: "  Invariati", color: "#64748b" },
-    { name: "ALLONTANATI", label: "  Allontanati", color: "#f97316" },
-    { name: "MOLTO_ALLONTANATI",label: "  Molto Allontanati",color: "#dc2626" }
-  ];
-  */
+  // --- SCALA DIVERGENTE DELLE CLASSI DI DISTANZA ---
+  // Le classi arrivano da Python ("distance_classes": {nome: fattore}) e il colore e' proporzionale al fattore:
+  // INVARIATI (1.0) e' il centro neutro, i fattori < 1 (allontanati) vanno verso il rosso,
+  // quelli > 1 (avvicinati) verso azzurro/viola. Palette (dal fattore piu' basso al piu' alto):
+  //   attuale:         ["#ef4444", "#f97316", "#64748b", "#06b6d4", "#e314b1"]  (rosso-arancione-grigio-azzurro-viola)
+  //   alternativa blu: ["#dc2626", "#f97316", "#64748b", "#06b6d4", "#1d4ed8"]
+  //   alt. verde:      ["#ef4444", "#f97316", "#64748b", "#22c55e", "#15803d"]
+  const DIVERGING_PALETTE = ["#ef4444", "#f97316", "#64748b", "#06b6d4", "#e314b1"];
 
-  /*
-  // palette alternativa verde scuro-verde chiaro-grigio-arancione-rosso
-  const EDGE_CLASSES = [
-      { name: "MOLTO_AVVICINATI", label: "  Molto Avvicinati", color: "#15803d" },
-      { name: "AVVICINATI", label: "  Avvicinati", color: "#22c55e" },
-      { name: "INVARIATI", label: "  Invariati", color: "#64748b" },
-      { name: "ALLONTANATI", label: "  Allontanati", color: "#f97316" },
-      { name: "MOLTO_ALLONTANATI", label: "  Molto Allontanati", color: "#ef4444" }
-  ];
-  */
+  let EDGE_CLASSES = [];
+  let EDGE_CLASS_COLORS = {};
 
-  // palette alternativa viola-azzurro-grigio-arancione-rosso
-  const EDGE_CLASSES = [
-      { name: "MOLTO_AVVICINATI", label: "  Molto Avvicinati", color: "#e314b1" },
-      { name: "AVVICINATI", label: "  Avvicinati", color: "#06b6d4" },
-      { name: "INVARIATI", label: "  Invariati", color: "#64748b" },
-      { name: "ALLONTANATI", label: "  Allontanati", color: "#f97316" },
-      { name: "MOLTO_ALLONTANATI", label: "  Molto Allontanati", color: "#ef4444" }
-  ];
+  function prettifyClassName(name) {
+    return name.split("_").map(w => w.charAt(0) + w.slice(1).toLowerCase()).join(" ");
+  }
 
-  const EDGE_CLASS_COLORS = Object.fromEntries(
-    EDGE_CLASSES.map(c => [c.name, c.color])
-  );
+  function syncEdgeClasses() {
+    const factors = Object.assign({ INVARIATI: 1.0 }, model.get("distance_classes") || {});
+    const values = Object.values(factors);
+    const colorScale = d3.scaleDiverging(d3.piecewise(d3.interpolateRgb, DIVERGING_PALETTE))
+      .domain([Math.min(...values, 1 - 1e-6), 1, Math.max(...values, 1 + 1e-6)]);
+
+    EDGE_CLASSES = Object.entries(factors)
+      .sort((a, b) => b[1] - a[1]) // dalla classe piu' "avvicinata" alla piu' "allontanata"
+      .map(([name, factor]) => ({
+        name,
+        factor,
+        label: prettifyClassName(name),
+        color: colorScale(factor)
+      }));
+    EDGE_CLASS_COLORS = Object.fromEntries(EDGE_CLASSES.map(c => [c.name, c.color]));
+  }
 
   // --- LAYOUT PRINCIPALE FLEXBOX ---
   const mainContainer = d3.select(el)
@@ -213,6 +211,126 @@ export function render({ model, el }) {
     .style("flex-direction", "column")
     .style("gap", "4px");
 
+  // Sezione Gestione Scala Classi di Distanza (aggiunta / rimozione)
+  const classSection = panel.append("div")
+    .style("display", "flex")
+    .style("flex-direction", "column")
+    .style("gap", "6px")
+    .style("padding-top", "8px")
+    .style("border-top", "1px solid #e2e8f0");
+
+  classSection.append("div")
+    .style("font-weight", "bold")
+    .style("font-size", "13px")
+    .text("[=] Scala Classi di Distanza");
+
+  const classListContainer = classSection.append("div")
+    .style("display", "flex")
+    .style("flex-direction", "column")
+    .style("gap", "3px");
+
+  const addClassBox = classSection.append("div")
+    .style("display", "flex")
+    .style("gap", "4px");
+
+  const inputClassName = addClassBox.append("input")
+    .attr("type", "text")
+    .attr("placeholder", "Nome classe...")
+    .style("flex", "1")
+    .style("min-width", "0")
+    .style("padding", "4px 6px")
+    .style("border", "1px solid #cbd5e1")
+    .style("border-radius", "4px")
+    .style("font-size", "11px");
+
+  const inputClassFactor = addClassBox.append("input")
+    .attr("type", "number")
+    .attr("step", "0.05")
+    .attr("min", "0.01")
+    .attr("placeholder", "Fattore")
+    .style("width", "62px")
+    .style("padding", "4px 6px")
+    .style("border", "1px solid #cbd5e1")
+    .style("border-radius", "4px")
+    .style("font-size", "11px");
+
+  const addClassBtn = addClassBox.append("button")
+    .text("+ Aggiungi")
+    .style("padding", "4px 8px")
+    .style("background", "#2563eb")
+    .style("color", "#ffffff")
+    .style("border", "none")
+    .style("border-radius", "4px")
+    .style("cursor", "pointer")
+    .style("font-size", "11px");
+
+  const classStatus = classSection.append("div")
+    .style("font-size", "11px");
+
+  function submitClass() {
+    const name = inputClassName.property("value").trim();
+    const factor = parseFloat(inputClassFactor.property("value"));
+    if (!name || !Number.isFinite(factor)) {
+      classStatus.style("color", "#dc2626").text("Errore: inserisci un nome e un fattore numerico.");
+      return;
+    }
+    model.set("class_registry_action", { action: "add", name, factor, timestamp: Date.now() });
+    model.save_changes();
+  }
+
+  inputClassName.on("keydown", (event) => { if (event.key === "Enter") submitClass(); });
+  inputClassFactor.on("keydown", (event) => { if (event.key === "Enter") submitClass(); });
+  addClassBtn.on("click", submitClass);
+
+  function showClassStatus() {
+    const msg = model.get("class_registry_status") || "";
+    const isError = msg.startsWith("Errore");
+    classStatus.style("color", isError ? "#dc2626" : "#16a34a").text(msg);
+    if (msg && !isError) { // aggiunta riuscita: svuota i campi
+      inputClassName.property("value", "");
+      inputClassFactor.property("value", "");
+    }
+  }
+
+  function renderClassManager() {
+    classListContainer.html("");
+    EDGE_CLASSES.forEach(cls => {
+      const row = classListContainer.append("div")
+        .style("display", "flex")
+        .style("align-items", "center")
+        .style("gap", "6px")
+        .style("font-size", "11px");
+
+      row.append("span")
+        .style("width", "10px").style("height", "10px")
+        .style("border-radius", "2px")
+        .style("background", cls.color);
+      row.append("span").style("flex", "1").text(cls.label);
+      row.append("span").style("color", "#64748b").text(`×${+cls.factor.toFixed(2)}`);
+
+      if (cls.name !== "INVARIATI") { // la classe neutra non e' rimovibile
+        const del = row.append("span")
+          .style("cursor", "pointer")
+          .style("font-weight", "bold")
+          .style("color", "#94a3b8")
+          .text("✕");
+
+        let armed = false; // doppio click: il primo arma, il secondo conferma
+        del.on("click", (event) => {
+          event.stopPropagation();
+          if (!armed) {
+            armed = true;
+            del.text("conferma?").style("color", "#dc2626");
+            setTimeout(() => { armed = false; del.text("✕").style("color", "#94a3b8"); }, 3000);
+            return;
+          }
+          model.set("class_registry_action", { action: "remove", name: cls.name, timestamp: Date.now() });
+          model.save_changes();
+        });
+      }
+    });
+  }
+
   function submitTag() {
     const val = inputTag.property("value").trim();
     if (!val || !selectedNodeId) return;
@@ -291,8 +409,11 @@ export function render({ model, el }) {
     return `url(#${gradId})`;
   }
 
+  let lastEdgePanelArgs = null; // [sourceId, targetId] dell'arco mostrato nel pannello, per ridisegnarlo se cambia la scala
+
   function renderEdgePanel(sourceId, targetId, currentClass) {
     edgeButtonsContainer.html("");
+    lastEdgePanelArgs = (sourceId && targetId) ? [sourceId, targetId] : null;
     if (!sourceId || !targetId) {
       edgeHeader.text("Clicca un arco per cambiarne la classe.");
       return;
@@ -305,7 +426,7 @@ export function render({ model, el }) {
       const isSelected = Boolean(currentClass) && currentClass.toUpperCase() === cls.name;
 
       const btn = edgeButtonsContainer.append("button")
-        .text(cls.label)
+        .text(`${cls.label}  (×${+cls.factor.toFixed(2)})`)
         .style("padding", "4px 8px")
         .style("border", isSelected ? "2px solid #000000" : "1px solid #cbd5e1")
         .style("border-radius", "4px")
@@ -410,11 +531,20 @@ export function render({ model, el }) {
     const graph = model.get("graph_data");
     const globalTags = model.get("global_tags") || {};
 
+    syncEdgeClasses();
     updateLegend();
     renderDetailPanel();
+    renderClassManager();
 
     if (!selectedEdgeKey) {
       renderEdgePanel(null, null, null);
+    } else if (lastEdgePanelArgs) {
+      // Ridisegna i bottoni (la scala potrebbe essere cambiata) con la classe attuale dell'arco selezionato
+      const [s, t] = lastEdgePanelArgs;
+      const cur = ((graph && graph.links) || []).find(l =>
+        getEdgeKey(typeof l.source === 'object' ? l.source.id : l.source,
+                   typeof l.target === 'object' ? l.target.id : l.target) === selectedEdgeKey);
+      renderEdgePanel(s, t, cur ? cur.distance_class : null);
     }
 
     if (!graph || !graph.nodes || graph.nodes.length === 0) return;
@@ -630,6 +760,8 @@ export function render({ model, el }) {
 
   model.on("change:graph_data", scheduleDraw);
   model.on("change:global_tags", scheduleDraw);
+  model.on("change:distance_classes", scheduleDraw);
+  model.on("change:class_registry_status", showClassStatus);
 
   draw();
 
@@ -639,6 +771,8 @@ export function render({ model, el }) {
     }
     model.off("change:graph_data", scheduleDraw);
     model.off("change:global_tags", scheduleDraw);
+    model.off("change:distance_classes", scheduleDraw);
+    model.off("change:class_registry_status", showClassStatus);
   };
 }
 
