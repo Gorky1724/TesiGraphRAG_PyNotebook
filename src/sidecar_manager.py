@@ -175,9 +175,11 @@ class SidecarManager:
             factor = float(factor)
         except (TypeError, ValueError):
             raise ValueError("Il fattore deve essere un numero.")
-        if not math.isfinite(factor) or factor <= 0:
+        if not math.isfinite(factor):
             raise ValueError("Il fattore deve essere un numero maggiore di 0.")
-        factor = round(factor, 4)
+        factor = round(factor, 3)  # 3 decimali: coerente con dist_factor/predq_alteration salvati nei record
+        if factor <= 0:
+            raise ValueError("Il fattore deve essere un numero maggiore di 0 (almeno 0.001).")
 
         data = self.load_data()
         factors = self.get_class_factors(data)

@@ -19,6 +19,13 @@ from src.config import (
 
 logger = logging.getLogger(__name__)
 
+# Flag di order_by che attivano le modalita' di unione delle categorie nel reranker (vedi DistanceTagReranker).
+# Con uno dei due, retrieve_close() non tronca: restituisce TUTTI i candidati (le categorie 2 e 3 vengono
+# poi unite alle altre e il taglio avviene una sola volta, dopo l'unione).
+JOIN_CONV_TAG_FLAG = "JOIN_CONV_TAG"
+JOIN_ALL_FLAG = "JOIN_ALL"
+JOIN_FLAGS = (JOIN_CONV_TAG_FLAG, JOIN_ALL_FLAG)
+
 def cosine_sim(v1: Union[List[float], np.ndarray], v2: Union[List[float], np.ndarray]) -> float:
     """Calcola la Cosine Similarity tra due vettori."""
     arr1 = np.array(v1, dtype=float)
@@ -108,7 +115,9 @@ class DistanceRetriever:
                     - "DIST": Applica il fattore moltiplicativo della classe di distanza.
                     - "TAGS": Applica bonus di sovrapposizione dei tag.
                     - "SCORE" o "": Calcola unicamente la similarità coseno base. Se presente con altri, questo NON ha la priorità.
-            top_m: Numero massimo di vicini da restituire dopo l'ordinamento.
+                    - "JOIN_CONV_TAG" / "JOIN_ALL": Modalita' di unione delle categorie, gestite dal reranker.
+                      Qui hanno l'unico effetto di NON troncare: viene restituita l'intera lista prioritizzata (top_m ignorato).
+            top_m: Numero massimo di vicini da restituire dopo l'ordinamento (ignorato con i flag JOIN_*).
             query_vector: Vettore di embedding della query.
             query_tags: Dizionario contenente i tag della query divisi per categoria:
                         {"conversation_tags": [...], "assigned_tags": [...],
@@ -125,7 +134,11 @@ class DistanceRetriever:
         if (not to_analyze and not predq_id) or query_vector is None:
             return []
 
-        if top_m is None or top_m <= 0:
+        # Normalizzazione flag di order_by
+        order_by_to_upper = [str(item).upper().strip() for item in (order_by or []) if item]
+        join_active = any(flag in order_by_to_upper for flag in JOIN_FLAGS)  # se True: nessun troncamento
+
+        if not join_active and (top_m is None or top_m <= 0):
             logger.warning("!>> Distance Retrieval annullato per il valore di TOP_M non valido: %s", top_m)
             return []
 
@@ -136,9 +149,6 @@ class DistanceRetriever:
             assigned_tags=query_tags.get("assigned_tags", []),
             automatic_tags=query_tags.get("automatic_tags", []),
         )
-
-        # Normalizzazione flag di order_by
-        order_by_to_upper = [str(item).upper().strip() for item in (order_by or []) if item]
 
         sidecar_data = self.sidecar_manager.load_data()
         modified_adjacencies = sidecar_data.get("modified_adjacencies", {})
@@ -181,6 +191,11 @@ class DistanceRetriever:
 
             seen_ids.add(chunk_id)
 
+        # Adiacenze della pred-query (se presente): usate sia per cercare vicini sia per il moltiplicatore finale
+        predq_adj: Dict[str, Dict[str, Any]] = {}
+        if predq_id and predq_id in pred_queries:
+            predq_adj = (pred_queries[predq_id] or {}).get("adjacencies") or {}
+
         # Mappatura adiacenze
         candidate_neighbors: Dict[str, Dict[str, Any]] = {}
 
@@ -202,9 +217,7 @@ class DistanceRetriever:
                                 }
 
         # Vicini alla pred-query (se presente)
-        if predq_id and predq_id in pred_queries:
-            predq_data = pred_queries[predq_id] or {}
-            predq_adj = predq_data.get("adjacencies") or {}
+        if predq_adj:
             for neighbor_id, info in predq_adj.items():
                 if neighbor_id not in seen_ids:
                     d_class = info.get("distance_class", "INVARIATI")
@@ -327,9 +340,13 @@ class DistanceRetriever:
                     tag_alteration = 1.0 + min(total_bonus, TAG_MAX_BOOST)
 
             # Moltiplicatore VICINANZA a query pre-determinata
+            # Letto direttamente dalle adiacenze della pred-query per qualunque classe (anche con fattore < 1):
+            #  un chunk avvicinato da un altro chunk ma allontanato dalla pred-query deve prendere il malus
+            #  (coerente con le categorie 1 e 4 del reranker).
             predq_alteration = 1.0
             if predq_id:
-                predq_alteration = float(neighbor_info.get("predq_alteration", 1.0))
+                predq_class = predq_adj.get(chunk_id, {}).get("distance_class", "INVARIATI")
+                predq_alteration = float(class_factors.get(predq_class, 1.0))
 
             # Punteggio finale
             raw_final_score = cos_score * dist_factor * tag_alteration * predq_alteration
@@ -364,4 +381,6 @@ class DistanceRetriever:
         for item in prioritized_candidates:
             del item["_raw_final_score"]
 
+        if join_active:
+            return prioritized_candidates  # il troncamento (top_j) avviene dopo l'unione, nel reranker
         return prioritized_candidates[:top_m]

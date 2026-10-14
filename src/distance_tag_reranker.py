@@ -11,7 +11,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from src.sidecar_manager import SidecarManager
-from src.distance_retriever import DistanceRetriever, build_query_tags
+from src.distance_retriever import DistanceRetriever, build_query_tags, JOIN_CONV_TAG_FLAG, JOIN_ALL_FLAG
 from src.predetermined_query_handling_methods import verify_if_pred_query
 from src.config import (
     COLLECTION_NAME,
@@ -35,6 +35,59 @@ def _extract_chunk_id(hit: Any, fallback_index: Optional[int] = None) -> str:
         chunk_id = f"{doc_id}_chunk_{chunk_idx}"
 
     return chunk_id
+
+def _join_rerank(
+    category1_candidates: List[Dict[str, Any]],
+    distance_records: List[Dict[str, Any]],
+    category4_candidates: List[Dict[str, Any]],
+    order_by_to_upper: List[str],
+    conv_tags: List[str],
+    join_all: bool,
+) -> List[Dict[str, Any]]:
+    """
+    Post-processing e unione delle categorie per le modalita' JOIN_CONV_TAG / JOIN_ALL.
+    Le categorie sono nate con una priorita' rigida, quindi i loro punteggi non erano confrontabili: qui li si
+    porta sulla stessa scala prima di riordinare.
+        - "TAGS": le categorie 1 e 2 (che hanno tutti i conversation tag) ricevono anche il bonus dei conv_tag, che
+          nel calcolo originale era escluso perche' "scontato". Si aggiunge dentro al cap TAG_MAX_BOOST, in modo esatto:
+          min(min(a, cap) + c, cap) == min(a + c, cap).
+        - Le categorie 2 e 3 perdono il distance_factor (dist_factor = 1.0): la classe di distanza decide chi
+          entra nel pool, non il punteggio.
+        - final_score di tutti i record ricalcolato come initial_score * dist_factor * tag_alteration * predq_alteration.
+    Poi:
+        - JOIN_CONV_TAG: ordina (1+2) e (3+4) separatamente e le concatena (1+2 prima di 3+4).
+        - JOIN_ALL: ordina tutte e quattro insieme.
+    Lavora su COPIE dei dizionari: le liste in ingresso (in particolare distance_records, che puo' arrivare dall'esterno)
+    non vengono modificate. A parita' di punteggio vale l'ordine di categoria 1, 2, 3, 4.
+    """
+    conv_bonus = 0.0
+    if "TAGS" in order_by_to_upper and conv_tags:
+        conv_bonus = len(conv_tags) * TAG_BOOST_ASSIGNED_CONV
+
+    def _fix(item: Dict[str, Any]) -> Dict[str, Any]:
+        item = dict(item)
+        category = item.get("category")
+        if conv_bonus and category in (1, 2):
+            item["tag_alteration"] = round(
+                1.0 + min((item["tag_alteration"] - 1.0) + conv_bonus, TAG_MAX_BOOST), 3
+            )
+        if category in (2, 3):
+            item["dist_factor"] = 1.0
+        raw = item["initial_score"] * item["dist_factor"] * item["tag_alteration"] * item["predq_alteration"]
+        item["_raw_final_score"] = raw
+        item["final_score"] = round(raw, 4)
+        return item
+
+    cat1 = [_fix(x) for x in category1_candidates]
+    cat4 = [_fix(x) for x in category4_candidates]
+    dist = [_fix(x) for x in distance_records]
+    cat2 = [x for x in dist if x.get("category") != 3]
+    cat3 = [x for x in dist if x.get("category") == 3]
+
+    by_score = lambda x: x["_raw_final_score"]
+    if join_all:
+        return sorted(cat1 + cat2 + cat3 + cat4, key=by_score, reverse=True)
+    return sorted(cat1 + cat2, key=by_score, reverse=True) + sorted(cat3 + cat4, key=by_score, reverse=True)
 
 class DistanceTagReranker:
     """
@@ -120,6 +173,12 @@ class DistanceTagReranker:
                     - "DIST" (per le categorie 2 e 3): Applica il fattore moltiplicativo della classe di distanza.
                     - "TAGS" (per le categorie 1-4): Applica bonus di sovrapposizione dei tag.
                     - "SCORE" o "" (per le categorie 1-4): Calcola unicamente la similarità coseno base. Se presente con altri, questo NON ha la priorità.
+                    - "JOIN_CONV_TAG": Unisce e riordina per punteggio le categorie 1-2 e 3-4 (1-2 resta prima di 3-4).
+                    - "JOIN_ALL": Unisce e riordina per punteggio tutte e quattro le categorie.
+                      Con uno dei due flag il distance retrieval restituisce tutti i candidati (top_m ignorato), le categorie
+                      1-2 ricevono anche il bonus dei conv_tag (se "TAGS"), le 2-3 perdono il distance_factor, e il taglio
+                      a top_j avviene una sola volta dopo l'unione. Se presenti entrambi vince JOIN_ALL.
+                      Un eventuale distance_retrieved_records passato dall'esterno deve essere stato prodotto con lo stesso flag.
             top_j: Numero massimo di vicini da restituire dopo l'ordinamento.
             query_vector: Vettore di embedding della query.
             query_tags: Dizionario contenente i tag della query divisi per categoria:
@@ -183,6 +242,14 @@ class DistanceTagReranker:
 
         # Normalizzazione flag di order_by
         order_by_to_upper = [str(item).upper().strip() for item in (order_by or []) if item]
+
+        # Modalita' di unione delle categorie
+        join_all = JOIN_ALL_FLAG in order_by_to_upper
+        join_conv = JOIN_CONV_TAG_FLAG in order_by_to_upper
+        if join_all and join_conv:
+            logger.warning("!> Presenti sia JOIN_ALL sia JOIN_CONV_TAG: si applica JOIN_ALL")
+            join_conv = False
+        join_active = join_all or join_conv
 
         sidecar_data = self.sidecar_manager.load_data()
         tag_overrides = sidecar_data.get("tag_overrides", {})
@@ -292,6 +359,10 @@ class DistanceTagReranker:
             else:
                 effective_top_m = max(0, top_j - n_category1)
 
+            if join_active:
+                # Una categoria 2/3 puo' battere una 1/4 in punteggio: il retrieval va fatto comunque e senza tetto.
+                effective_top_m = top_j  # valore solo formale: con i flag JOIN retrieve_close restituisce tutto
+
             # Necessità il distance_retrieval
             if effective_top_m > 0 and category1_candidates:
                 to_analyze_nodes = category1_candidates
@@ -313,7 +384,17 @@ class DistanceTagReranker:
         dist_retrieved_ids = {item["chunk_id"] for item in (distance_retrieved_records or [])}
         category4_candidates = [c for c in category4_candidates if c["chunk_id"] not in dist_retrieved_ids]
 
-        final_ranked = category1_candidates + (distance_retrieved_records or []) + category4_candidates
+        if join_active:
+            final_ranked = _join_rerank(
+                category1_candidates=category1_candidates,
+                distance_records=distance_retrieved_records or [],
+                category4_candidates=category4_candidates,
+                order_by_to_upper=order_by_to_upper,
+                conv_tags=conv_tags,
+                join_all=join_all,
+            )
+        else:
+            final_ranked = category1_candidates + (distance_retrieved_records or []) + category4_candidates
 
         for item in final_ranked:
             if "_raw_final_score" in item:
