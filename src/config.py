@@ -59,7 +59,7 @@ SIMILARITY_THRESHOLD = 0.80  # Soglia minima Cosine Similarity per tracciare un 
 SIMILARITY_THRESHOLD = 0.60
 #"""
 
-BASE_GRAPH_DISTANCE = 300   # Lunghezza base in pixel (per similarità 1.0)
+BASE_GRAPH_DISTANCE = 300   # Lunghezza base in pixel
 
 # ======================================================================
 # PARAMETRI GENERALI RETRIEVAL E RERANKING
@@ -68,7 +68,7 @@ RETRIEVAL_TOP_K = 7  # Numero chunk retrieved da Qdrant con il vector_similarity
 RERANKING_TOP_N = 4   # Numero chunk restituiti dopo il reranking
 
 # ======================================================================
-# CONFIGURAZIONE TAG RERANKER
+# CONFIGURAZIONE TAG RERANKER: DistanceTagReranker
 # ======================================================================
 
 TAG_BOOST_FACTOR = 0.20   # Boost del +20% per ogni tag in comune tra query e chunk
@@ -120,7 +120,7 @@ TAG_WEIGHT_OVERLAP = 0.30
 """
 
 # ======================================================================
-# PARAMETRI RERANKING per CLASSI DI DISTANZA
+# PARAMETRI RERANKING per CLASSI DI DISTANZA: DistanceTagReranker
 # ======================================================================
 
 TAG_BOOST_ASSIGNED_CONV = 0.20  # Bonus per tag inserito dall'utente (Assigned_TAG / Conversation-TAG). Per il conv_tag si applica solo per match parziali
