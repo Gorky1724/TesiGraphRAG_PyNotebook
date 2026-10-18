@@ -15,3 +15,5 @@ python-dotenv
 pydantic
 fastapi
 uvicorn[standard]
+pymupdf
+ragas

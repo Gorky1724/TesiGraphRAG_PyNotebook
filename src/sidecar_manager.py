@@ -150,7 +150,7 @@ class SidecarManager:
         Restituisce la scala attiva {nome_classe: fattore moltiplicativo}.
         Finche' nel sidecar non e' mai stata modificata la scala (chiave "distance_classes" assente)
         si usano i default di config.DISTANCE_CLASS_FACTORS, quindi un sidecar esistente continua a funzionare identico.
-        "INVARIATI" (1.0) e' la classe neutra: e' sempre presente e non e' rimovibile.
+        "INVARIATI" (1.0) e' la classe neutra: e' sempre presente e non e' rimuovibile.
         Se si ha gia' in mano il dizionario `data` (load_data) lo si puo' passare per evitare un'ulteriore copia.
         """
         if data is None:
@@ -182,7 +182,7 @@ class SidecarManager:
             raise ValueError("Il fattore deve essere un numero maggiore di 0 (almeno 0.001).")
 
         data = self.load_data()
-        factors = self.get_class_factors(data)
+        factors = self.get_class_factors(data) # se la prima istanziazione, inserirà anche quelli di src.config
         if norm_name in factors:
             raise ValueError(f"La classe {norm_name} esiste gia'.")
         if any(math.isclose(factor, f) for f in factors.values()):

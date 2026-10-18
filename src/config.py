@@ -41,7 +41,9 @@ DEFAULT_NUM_THREAD = 4
 # ======================================================================
 
 #COLLECTION_NAME = "unilanguage_armstrong"
-COLLECTION_NAME = "multilanguage_armstrong"
+#COLLECTION_NAME = "multilanguage_armstrong"
+
+COLLECTION_NAME = "ds_tesi_multilang"
 
 #COLLECTION_NAME = "ds1_unilingual_base"
 #COLLECTION_NAME = "ds1_multilingual_base"
