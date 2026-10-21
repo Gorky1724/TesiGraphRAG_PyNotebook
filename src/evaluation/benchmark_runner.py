@@ -3,7 +3,7 @@ Orchestratore del benchmark RAGAS (cap. sperimentazione).
 
 Due fasi separate, entrambe riprendibili (resume) perche' LLM locale e giudice API sono lenti/limitati:
   1) generate(run_id)        -> usa PipelineHandler (retrieval, reranking, risposta LLM) per ogni query x configurazione
-                                 e salva contesti, risposta, reference in  <out_dir>/<run_id>_generation.jsonl
+                                e salva contesti, risposta, reference in  <out_dir>/<run_id>_generation.jsonl
   2) evaluate_ragas(run_id)  -> calcola le metriche RAGAS con un giudice LLM esterno, una configurazione alla volta
   3) summary / paired_vs_baseline -> tabelle per la tesi (medie per categoria, differenze con IC bootstrap, win/tie/loss)
 
@@ -24,9 +24,9 @@ logger = logging.getLogger(__name__)
 # Ablation: C0 baseline vettoriale, C1 solo tag, C2 solo distanze, C3 distanze + tag
 DEFAULT_CONFIGS: List[Dict[str, Any]] = [
     {"name": "C0_baseline", "mode": "vector"},
-    {"name": "C1_tags", "mode": "rerank", "order_by": ["TAGS"], "auto_tags": True},
-    {"name": "C2_dist", "mode": "rerank", "order_by": ["DIST"], "auto_tags": False},
-    {"name": "C3_dist_tags", "mode": "rerank", "order_by": ["DIST", "TAGS"], "auto_tags": True},
+    {"name": "C1_tags", "mode": "rerank", "order_by": ["TAGS"], "auto_tags": False, "manual_tags": True, "conv_tags": True},
+    {"name": "C2_dist", "mode": "rerank", "order_by": ["DIST"], "auto_tags": False, "manual_tags": True, "conv_tags": True},
+    {"name": "C3_dist_tags", "mode": "rerank", "order_by": ["DIST", "TAGS"], "auto_tags": True, "manual_tags": True, "conv_tags": True},
 ]
 
 ENGLISH_PROMPT = (
@@ -55,6 +55,26 @@ def _bootstrap_ci(diffs: np.ndarray, n_boot: int = 5000, seed: int = 0):
     rng = np.random.default_rng(seed)
     means = rng.choice(diffs, size=(n_boot, len(diffs)), replace=True).mean(axis=1)
     return float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5))
+
+
+def _extract_conv_tags(q: Dict[str, Any]) -> List[str]:
+    """Estrae i tag conversazionali dalla voce 'expected_tag' (o 'expected_tags')."""
+    raw = q.get("expected_tag") if "expected_tag" in q else q.get("expected_tags", [])
+    if isinstance(raw, str):
+        return [raw] if raw.strip() else []
+    if isinstance(raw, list):
+        return list(raw)
+    return []
+
+
+def _extract_manual_tags(q: Dict[str, Any]) -> List[str]:
+    """Estrae i tag manuali dalla voce 'tags'."""
+    raw = q.get("tags", [])
+    if isinstance(raw, str):
+        return [raw] if raw.strip() else []
+    if isinstance(raw, list):
+        return list(raw)
+    return []
 
 
 class RagasBenchmark:
@@ -90,7 +110,7 @@ class RagasBenchmark:
     # ------------------------------------------------------------------ setup
     def register_predetermined(self, which: str = "pred") -> List[str]:
         """Importa query nel sidecar come predeterminate (id con prefisso predq_).
-        which: "pred" (15 predeterminate) | "normal" (le altre 15) | "all" (tutte e 30)."""
+        which: "pred" (21 predeterminate) | "normal" (le altre 21) | "all" (tutte e 42)."""
         ids = []
         if which in ("pred", "all"):
             ids += self.h.add_predetermined_queries_from_file(self.pred_path)
@@ -112,13 +132,24 @@ class RagasBenchmark:
                          "n_graph_tags": len((e or {}).get("graphically_assigned_tags", []))})
         return pd.DataFrame(rows)
 
-    def prepare(self, query_id: str, order_by: Optional[List[str]] = None, auto_tags: bool = True) -> Dict[str, Any]:
+    def prepare(
+        self,
+        query_id: str,
+        order_by: Optional[List[str]] = None,
+        auto_tags: bool = True,
+        manual_tags: bool = False,
+        conv_tags: bool = False,
+    ) -> Dict[str, Any]:
         """Porta l'handler sulla query (retrieval + reranking): poi si usa il widget come in handler.update_widget_view(...)."""
         q = next(q for q in self.queries if q["id"] == query_id)
         h = self.h
         h.set_parameters(top_j=self.top_j, top_k=self.top_k, top_n=self.top_n, order_by=order_by or ["DIST", "TAGS"])
         h.update_query(new_text=q["query"])
-        h.update_query_tags(new_conv_list=[], new_ass_list=[], auto_ass_flag=auto_tags, print_debug=True)
+
+        conv_list = _extract_conv_tags(q) if conv_tags else []
+        ass_list = _extract_manual_tags(q) if manual_tags else []
+
+        h.update_query_tags(new_conv_list=conv_list, new_ass_list=ass_list, auto_ass_flag=auto_tags, print_debug=True)
         h.run_vectorial_retrieval()
         h.run_top_j_distance_tag_reranking()
         return q
@@ -196,7 +227,11 @@ class RagasBenchmark:
                         records = list(h.raw_records)[: self.top_j]
                     else:
                         h.set_parameters(order_by=c.get("order_by", []))
-                        h.update_query_tags(new_conv_list=[], new_ass_list=[],
+
+                        conv_list = _extract_conv_tags(q) if c.get("conv_tags", False) else []
+                        ass_list = _extract_manual_tags(q) if c.get("manual_tags", False) else []
+
+                        h.update_query_tags(new_conv_list=conv_list, new_ass_list=ass_list,
                                             auto_ass_flag=c.get("auto_tags", False))
                         h.run_top_j_distance_tag_reranking()
                         records = list(h.top_j_reranked)

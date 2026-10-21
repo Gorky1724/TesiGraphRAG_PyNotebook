@@ -4,9 +4,9 @@ import os
 # SELEZIONE MODELLO LLM (solo UNA delle opzioni)
 # ======================================================================
 
-LLM_MODEL = "llama3.2"       # Llama 3.2 (3B) -> Sviluppo fluido e bilanciato su CPU (Default)
+#LLM_MODEL = "llama3.2"       # Llama 3.2 (3B) -> Sviluppo fluido e bilanciato su CPU (Default)
 #LLM_MODEL = "llama3.2:1b"  # Llama 3.2 (1B) -> Ultra-veloce per coding e debug rapido
-#LLM_MODEL = "llama3.1"     # Llama 3.1 (8B) -> Massima qualità per i test finali
+LLM_MODEL = "llama3.1"     # Llama 3.1 (8B) -> Massima qualità per i test finali
 
 
 # ======================================================================
@@ -44,7 +44,8 @@ DEFAULT_NUM_THREAD = 4
 #COLLECTION_NAME = "multilanguage_armstrong"
 
 #COLLECTION_NAME = "ds_tesi_multilang"
-COLLECTION_NAME = "dst_cleaned"
+#COLLECTION_NAME = "dst_cleaned"
+COLLECTION_NAME = "dst_for_ragas"
 
 #COLLECTION_NAME = "ds1_unilingual_base"
 #COLLECTION_NAME = "ds1_multilingual_base"

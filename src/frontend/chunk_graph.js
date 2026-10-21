@@ -23,9 +23,9 @@ export function render({ model, el }) {
   // Le classi arrivano da Python ("distance_classes": {nome: fattore}) e il colore e' proporzionale al fattore:
   // INVARIATI (1.0) e' il centro neutro, i fattori < 1 (allontanati) vanno verso il rosso,
   // quelli > 1 (avvicinati) verso azzurro/viola. Palette (dal fattore piu' basso al piu' alto):
-  //   attuale:         ["#ef4444", "#f97316", "#64748b", "#06b6d4", "#e314b1"]  (rosso-arancione-grigio-azzurro-viola)
-  //   alternativa blu: ["#dc2626", "#f97316", "#64748b", "#06b6d4", "#1d4ed8"]
-  //   alt. verde:      ["#ef4444", "#f97316", "#64748b", "#22c55e", "#15803d"]
+  //   attuale:         ["#ef4444", "#f97316", "#64748b", "#06b6d4", "#e314b1"] // (rosso-arancione-grigio-azzurro-viola)
+  //   alternativa blu: ["#dc2626", "#f97316", "#64748b", "#06b6d4", "#1d4ed8"] // (rosso-arancione-grigio-azzurro-blu)
+  //   alt. verde:      ["#ef4444", "#f97316", "#64748b", "#22c55e", "#15803d"] // (rosso-arancione-grigio-verdechiaro-verdescuro)
   const DIVERGING_PALETTE = ["#ef4444", "#f97316", "#64748b", "#06b6d4", "#e314b1"];
 
   let EDGE_CLASSES = [];
