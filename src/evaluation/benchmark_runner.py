@@ -256,11 +256,15 @@ class RagasBenchmark:
 
     # ------------------------------------------------------------------ RAGAS
     def evaluate_ragas(self, run_id: str, judge_llm, max_workers: int = 2, timeout: int = 300,
-                       metrics: Optional[List[Any]] = None, configs: Optional[List[str]] = None) -> pd.DataFrame:
+                       metrics: Optional[List[Any]] = None, configs: Optional[List[str]] = None,
+                       max_nan_frac: Optional[float] = 0.3) -> pd.DataFrame:
         """
         judge_llm: modello chat LangChain del giudice (es. ChatGoogleGenerativeAI / ChatGroq / ChatOpenAI).
         Embedding per ResponseRelevancy: quelli locali dell'handler (nessun costo API).
         Salva un CSV per configurazione: se esiste gia' viene saltata (riprendibile).
+        max_nan_frac: se per una metrica la quota di NaN (fallimenti del giudice) supera questa soglia, il CSV NON
+                      viene salvato col nome normale (cosi' alla ripartenza la config viene rifatta): finisce in
+                      <run_id>_<config>_REJECTED.csv e la valutazione si ferma con un errore. None = nessun controllo.
         """
         from ragas import EvaluationDataset, evaluate
         from ragas.embeddings import LangchainEmbeddingsWrapper
@@ -274,11 +278,22 @@ class RagasBenchmark:
             raise RuntimeError("Nessuna generazione trovata: esegui prima generate().")
         llm = LangchainLLMWrapper(judge_llm)
 
-        # Poiché si usa un embedding locale: assegna una stringa fittizia all'attributo model dell'embedding
-        # per evitare il ValidationError di Pydantic (Tracking dei costi di Ragas)
-        self.h.embeddings.model = "fastembed-local"
+        # Ragas fa getattr(embeddings, "model") sull'oggetto interno per il tracking: su FastEmbedEmbeddings .model e'
+        # l'oggetto fastembed.TextEmbedding (non una str) -> ValidationError Pydantic. NON sovrascrivere .model
+        # (e' il motore di embedding dell'handler): a Ragas si passa un adattatore che non espone .model.
+        from langchain_core.embeddings import Embeddings
 
-        emb = LangchainEmbeddingsWrapper(self.h.embeddings)
+        class _NoModelAttr(Embeddings):
+            def __init__(self, inner):
+                self._inner = inner
+
+            def embed_documents(self, texts):
+                return self._inner.embed_documents(texts)
+
+            def embed_query(self, text):
+                return self._inner.embed_query(text)
+
+        emb = LangchainEmbeddingsWrapper(_NoModelAttr(self.h.embeddings))
         metrics = metrics or [Faithfulness(), ResponseRelevancy(),
                               LLMContextPrecisionWithReference(), LLMContextRecall()]
 
@@ -303,9 +318,25 @@ class RagasBenchmark:
 
             df = res.to_pandas()
             mcols = [c for c in df.columns if c not in BASE_COLS]
+            if len(df) != len(sub):
+                raise RuntimeError(f"{cname}: Ragas ha restituito {len(df)} righe, attese {len(sub)}: nulla salvato.")
             df = pd.concat([sub[["run_id", "query_id", "category", "subtype", "is_predetermined", "config"]],
                             df[mcols]], axis=1)
-            df.to_csv(out, index=False)
+
+            # Controllo NaN: timeout, JSON non valido o quota API esaurita diventano NaN (raise_exceptions=False).
+            nan_frac = df[mcols].isna().mean()
+            if max_nan_frac is not None and (nan_frac > max_nan_frac).any():
+                rej = self.out_dir / f"{run_id}_{cname}_REJECTED.csv"
+                df.to_csv(rej, index=False)
+                raise RuntimeError(
+                    f"{cname}: troppi NaN, CSV NON salvato come valutato (copia in {rej.name}). "
+                    f"Quota NaN per metrica: {nan_frac.round(2).to_dict()} (soglia {max_nan_frac}). "
+                    f"Rilancia la cella per rifare questa config, oppure alza max_nan_frac / usa None per accettarli.")
+
+            # Scrittura atomica: un'interruzione durante il salvataggio non lascia un CSV a meta' che verrebbe saltato.
+            tmp = out.with_name(out.name + ".tmp")
+            df.to_csv(tmp, index=False)
+            tmp.replace(out)
             logger.info(f"?> {cname}: salvato {out.name} (NaN: {int(df[mcols].isna().sum().sum())})")
         return self.load_ragas(run_id)
 
