@@ -23,10 +23,12 @@ logger = logging.getLogger(__name__)
 
 # Ablation: C0 baseline vettoriale, C1 solo tag, C2 solo distanze, C3 distanze + tag
 DEFAULT_CONFIGS: List[Dict[str, Any]] = [
-    {"name": "C0_baseline", "mode": "vector"},
+    {"name": "C0_baseline", "mode": "vector", "auto_tags": False},
     {"name": "C1_tags", "mode": "rerank", "order_by": ["TAGS"], "auto_tags": False, "manual_tags": True, "conv_tags": True},
     {"name": "C2_dist", "mode": "rerank", "order_by": ["DIST"], "auto_tags": False, "manual_tags": True, "conv_tags": True},
-    {"name": "C3_dist_tags", "mode": "rerank", "order_by": ["DIST", "TAGS"], "auto_tags": True, "manual_tags": True, "conv_tags": True},
+    {"name": "C3_dist_tags", "mode": "rerank", "order_by": ["DIST", "TAGS"], "auto_tags": False, "manual_tags": True, "conv_tags": True},
+    {"name": "C4_dist_tags_joinconv", "mode": "rerank", "order_by": ["DIST", "TAGS", "JOIN_CONV_TAG"], "auto_tags": False, "manual_tags": True, "conv_tags": True},
+    {"name": "C5_dist_tags_joinall", "mode": "rerank", "order_by": ["DIST", "TAGS", "JOIN_ALL"], "auto_tags": False, "manual_tags": True, "conv_tags": True},
 ]
 
 ENGLISH_PROMPT = (
@@ -136,9 +138,9 @@ class RagasBenchmark:
         self,
         query_id: str,
         order_by: Optional[List[str]] = None,
-        auto_tags: bool = True,
-        manual_tags: bool = False,
-        conv_tags: bool = False,
+        auto_tags: bool = False,
+        manual_tags: bool = True,
+        conv_tags: bool = True,
     ) -> Dict[str, Any]:
         """Porta l'handler sulla query (retrieval + reranking): poi si usa il widget come in handler.update_widget_view(...)."""
         q = next(q for q in self.queries if q["id"] == query_id)
@@ -271,6 +273,11 @@ class RagasBenchmark:
         if gen.empty:
             raise RuntimeError("Nessuna generazione trovata: esegui prima generate().")
         llm = LangchainLLMWrapper(judge_llm)
+
+        # Poiché si usa un embedding locale: assegna una stringa fittizia all'attributo model dell'embedding
+        # per evitare il ValidationError di Pydantic (Tracking dei costi di Ragas)
+        self.h.embeddings.model = "fastembed-local"
+
         emb = LangchainEmbeddingsWrapper(self.h.embeddings)
         metrics = metrics or [Faithfulness(), ResponseRelevancy(),
                               LLMContextPrecisionWithReference(), LLMContextRecall()]
@@ -283,9 +290,17 @@ class RagasBenchmark:
             sub = gen[gen.config == cname].reset_index(drop=True)
             ds = EvaluationDataset.from_list(sub[["user_input", "retrieved_contexts", "response", "reference"]]
                                              .to_dict("records"))
-            res = evaluate(dataset=ds, metrics=metrics, llm=llm, embeddings=emb,
-                           run_config=RunConfig(max_workers=max_workers, timeout=timeout),
-                           raise_exceptions=False, show_progress=True)
+            # Isola Ragas dal loop di Jupyter tramite un Thread isolato permettendone l'esecuzione senza problemi di contesti
+            import concurrent.futures
+
+            def run_eval():
+                return evaluate(dataset=ds, metrics=metrics, llm=llm, embeddings=emb,
+                                run_config=RunConfig(max_workers=max_workers, timeout=timeout),
+                                raise_exceptions=False, show_progress=True)
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                res = executor.submit(run_eval).result()
+
             df = res.to_pandas()
             mcols = [c for c in df.columns if c not in BASE_COLS]
             df = pd.concat([sub[["run_id", "query_id", "category", "subtype", "is_predetermined", "config"]],
@@ -332,3 +347,4 @@ class RagasBenchmark:
         g = self.load_generation(run_id)
         cols = [c for c in ["gold_hit", "gold_recall", "gold_precision", "gold_mrr"] if c in g.columns]
         return g.groupby(["config", "category"])[cols].mean().round(3) if cols else pd.DataFrame()
+
