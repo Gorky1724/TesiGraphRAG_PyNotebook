@@ -166,10 +166,15 @@ class RagasBenchmark:
         P /= np.linalg.norm(P, axis=1, keepdims=True)
         N /= np.linalg.norm(N, axis=1, keepdims=True)
         S = N @ P.T
-        rows = [{"normal_id": q["id"], "paired_with": q["paired_with"],
-                 "max_sim": float(S[i].max()), "closest_pred": pred[int(S[i].argmax())]["id"],
-                 "sim_with_partner": float(S[i][[p["id"] for p in pred].index(q["paired_with"])])}
-                for i, q in enumerate(norm)]
+        pred_ids = [p["id"] for p in pred]
+        rows = []
+        for i, q in enumerate(norm):
+            row = {"normal_id": q["id"], "max_sim": float(S[i].max()), "closest_pred": pred[int(S[i].argmax())]["id"]}
+            pw = q.get("paired_with")
+            if pw in pred_ids:
+                row["paired_with"] = pw
+                row["sim_with_partner"] = float(S[i][pred_ids.index(pw)])
+            rows.append(row)
         df = pd.DataFrame(rows).sort_values("max_sim", ascending=False)
         bad = df[df.max_sim >= warn_above]
         if len(bad):

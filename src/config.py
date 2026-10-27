@@ -42,7 +42,9 @@ DEFAULT_NUM_THREAD = 4
 
 #COLLECTION_NAME = "unilanguage_armstrong"
 #COLLECTION_NAME = "multilanguage_armstrong"
-COLLECTION_NAME = "armstrong_bench"
+#COLLECTION_NAME = "armstrong_bench"
+
+COLLECTION_NAME = "colosseum_bench"
 
 #COLLECTION_NAME = "ds_tesi_multilang"
 #COLLECTION_NAME = "dst_cleaned"
