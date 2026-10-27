@@ -29,6 +29,7 @@ logs/
 *.tar.gz
 *.txt
 !requirements.txt
+!requirements_backup.txt
 *.pth
 *.bin
 *.safetensors
