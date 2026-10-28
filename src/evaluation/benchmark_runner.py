@@ -63,19 +63,30 @@ def _extract_conv_tags(q: Dict[str, Any]) -> List[str]:
     """Estrae i tag conversazionali dalla voce 'expected_tag' (o 'expected_tags')."""
     raw = q.get("expected_tag") if "expected_tag" in q else q.get("expected_tags", [])
     if isinstance(raw, str):
-        return [raw] if raw.strip() else []
+        return [raw.strip()] if raw.strip() else []
     if isinstance(raw, list):
-        return list(raw)
+        flat = []
+        for item in raw:
+            if isinstance(item, list):
+                flat.extend([str(i).strip() for i in item if i])
+            elif item:
+                flat.append(str(item).strip())
+        return flat
     return []
-
 
 def _extract_manual_tags(q: Dict[str, Any]) -> List[str]:
     """Estrae i tag manuali dalla voce 'tags'."""
     raw = q.get("tags", [])
     if isinstance(raw, str):
-        return [raw] if raw.strip() else []
+        return [raw.strip()] if raw.strip() else []
     if isinstance(raw, list):
-        return list(raw)
+        flat = []
+        for item in raw:
+            if isinstance(item, list):
+                flat.extend([str(i).strip() for i in item if i])
+            elif item:
+                flat.append(str(item).strip())
+        return flat
     return []
 
 

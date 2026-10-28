@@ -225,8 +225,19 @@ class DistanceTagReranker:
         query_tags = query_tags or {} # fallback per sicurezza a dict vuoto
         if predq and predq_data:
             # Aggiornamento query_tags con i tag assegnati graficamente alla pred_query
+            #   rende liste eventuali liste di liste passate
             pred_ass_tags = predq_data.get("graphically_assigned_tags") or []
-            combined_ass_tags = list(set(query_tags.get("assigned_tags", []) + pred_ass_tags))
+
+            # Unisce le liste ed elimina eventuali annidamenti
+            raw_tags = (query_tags.get("assigned_tags") or []) + pred_ass_tags
+            flat_tags = []
+            for t in raw_tags:
+                if isinstance(t, list):
+                    flat_tags.extend(t)
+                elif t:
+                    flat_tags.append(t)
+
+            combined_ass_tags = list(set(flat_tags))
 
             query_tags = build_query_tags(
                 conversation_tags=query_tags.get("conversation_tags", []),
